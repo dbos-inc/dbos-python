@@ -236,6 +236,23 @@ class StepInfo(TypedDict):
 _dbos_null_topic = "__null__topic__"
 
 
+class WorkflowStatusCountOutput:
+    def __init__(self, *, status: str, workflow_count: int, event_time: int) -> None:
+        self.status = status
+        self.workflow_count = workflow_count
+        self.event_time = event_time
+
+
+class QueueStatusCountOutput:
+    def __init__(
+        self, *, queue_name: str, tasks_count: int, status: str, event_time: int
+    ) -> None:
+        self.queue_name = queue_name
+        self.tasks_count = tasks_count
+        self.status = status
+        self.event_time = event_time
+
+
 class ConditionCount(TypedDict):
     condition: threading.Condition
     count: int
@@ -1851,6 +1868,87 @@ class SystemDatabase:
         except Exception as e:
             dbos_logger.error(f"Error connecting to the DBOS system database: {e}")
             raise
+
+    ##### METRICS #####
+    def workflow_status_count(
+        self, status_filter: Optional[List[str]] = None
+    ) -> List[WorkflowStatusCountOutput]:
+        """
+        Retrieves the count of workflows grouped by their status.
+
+        Args:
+            status_filter (Optional[List[str]]): A list of statuses to filter the query.
+
+        Returns:
+            List[WorkflowStatusCountOutput]: A list of WorkflowStatusCountOutput objects containing status and count.
+        """
+        query = sa.select(
+            SystemSchema.workflow_status.c.status,
+            sa.func.count().label("workflow_count"),
+            sa.text("EXTRACT(EPOCH FROM NOW()) AS event_time"),
+        ).group_by(SystemSchema.workflow_status.c.status)
+
+        if status_filter:
+            query = query.where(
+                SystemSchema.workflow_status.c.status.in_(status_filter)
+            )
+
+        with self.engine.begin() as conn:
+            rows = conn.execute(query).fetchall()
+
+        return [
+            WorkflowStatusCountOutput(
+                status=row[0], workflow_count=row[1], event_time=row[2]
+            )
+            for row in rows
+        ]
+
+    def queue_status_count(
+        self,
+        queue_name_filter: Optional[List[str]] = None,
+        status: Optional[str] = None,
+    ) -> List[QueueStatusCountOutput]:
+        """
+        Retrieves the count of workflows grouped by their queue name and filtered by status.
+
+        Args:
+            queue_name_filter (Optional[List[str]]): A list of queue names to filter the query.
+            status (Optional[str]): The workflow status to filter by. Defaults to None.
+
+        Returns:
+            List[QueueStatusCountOutput]: A list of QueueStatusCountOutput objects containing queue_name and tasks_count.
+        """
+        query = (
+            sa.select(
+                SystemSchema.workflow_status.c.queue_name,
+                SystemSchema.workflow_status.c.status,
+                sa.func.count().label("tasks_count"),
+                sa.text("EXTRACT(EPOCH FROM NOW()) AS event_time"),
+            )
+            .where(SystemSchema.workflow_status.c.queue_name.isnot(None))
+            .group_by(
+                SystemSchema.workflow_status.c.queue_name,
+                SystemSchema.workflow_status.c.status,
+            )
+        )
+
+        if status:
+            query = query.where(SystemSchema.workflow_status.c.status == status)
+
+        if queue_name_filter:
+            query = query.where(
+                SystemSchema.workflow_status.c.queue_name.in_(queue_name_filter)
+            )
+
+        with self.engine.begin() as conn:
+            rows = conn.execute(query).fetchall()
+
+        return [
+            QueueStatusCountOutput(
+                queue_name=row[0], status=row[1], tasks_count=row[2], event_time=row[3]
+            )
+            for row in rows
+        ]
 
 
 def reset_system_database(postgres_db_url: sa.URL, sysdb_name: str) -> None:
